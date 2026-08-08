@@ -11,8 +11,17 @@ struct Curve {
     f16vec2 p2;
 };
 
+struct Stripe {
+    uint curve_start;
+    uint curve_count;
+};
+
 layout(std430, set = 0, binding = 2) readonly buffer CurveBuffer {
     Curve curves[];
+};
+
+layout(std430, set = 0, binding = 3) readonly buffer StripeBuffer {
+    Stripe stripes[];
 };
 
 layout(location = 0) in vec2 in_uv;
@@ -22,6 +31,7 @@ layout(location = 3) in vec2 in_half_size;
 layout(location = 4) in flat float in_radius;
 layout(location = 5) in flat uint in_kind;
 layout(location = 6) in flat uint in_index;
+layout(location = 7) in vec4 in_src_bounds;
 
 layout(location = 0) out vec4 out_color;
 
@@ -63,6 +73,10 @@ float scanline_sweep(vec2 size, vec2 offset, vec2 p0, vec2 p1, vec2 p2) {
     p0 -= offset;
     p1 -= offset;
     p2 -= offset;
+
+    if (min(p0.x, p2.x) >= size.x) {
+        return 0.0;
+    }
 
     if (p0.x == p1.x && p0.x == p2.x) {
         if (p0.x >= size.x) {
@@ -163,14 +177,22 @@ void main() {
     }
 
     if (in_kind == KIND_TEXT) {
-        uint num_curves = uint(in_radius);
+        float stripe_count_float = in_radius;
 
         vec2 pixel_size = fwidth(in_uv);
         vec2 pixel_offset = in_uv - 0.5 * pixel_size;
 
+        float y_min = in_src_bounds.y;
+        float y_max = in_src_bounds.w;
+        float y_range = max(y_max - y_min, 1e-6);
+        float t = clamp((in_uv.y - y_min) / y_range, 0.0, 0.9999);
+        uint stripe_idx = uint(t * stripe_count_float);
+
+        Stripe s = stripes[in_index + stripe_idx];
+
         float total_coverage = 0.0;
-        for (uint i = 0u; i < num_curves; i++) {
-            Curve c = curves[in_index + i];
+        for (uint i = 0u; i < s.curve_count; i++) {
+            Curve c = curves[s.curve_start + i];
             total_coverage += scanline_sweep(pixel_size, pixel_offset, vec2(c.p0), vec2(c.p1), vec2(c.p2));
         }
 

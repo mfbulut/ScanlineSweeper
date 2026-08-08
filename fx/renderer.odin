@@ -21,11 +21,18 @@ Instance :: struct #align(16) {
 	kind:   enum u32 { Rect, Texture, Text },
 }
 
-Glyph :: struct {
-	unicode:     rune,
-	advance:     f32,
+STRIPE_COUNT :: 8
+
+Stripe :: struct {
 	curve_start: u32,
 	curve_count: u32,
+}
+
+Glyph :: struct {
+	unicode:      rune,
+	advance:      f32,
+	stripe_index: u32,
+	bounds:       Rect,
 }
 
 Font :: map[rune]Glyph
@@ -128,6 +135,7 @@ draw_texture :: proc(tex: Texture, rect: Rect, tint := cast([4]Color)WHITE, radi
 
 font_load :: proc(font_bytes: []u8) -> Font {
 	@(static) total_curves_loaded: u32
+	@(static) total_stripes_loaded: u32
 
 	offset := 0
 
@@ -137,28 +145,45 @@ font_load :: proc(font_bytes: []u8) -> Font {
 	curve_count := (^u32)(raw_data(font_bytes[offset:]))^
 	offset += size_of(u32)
 
+	stripe_count := (^u32)(raw_data(font_bytes[offset:]))^
+	offset += size_of(u32)
+
 	glyphs_bytes_len := int(glyph_count) * size_of(Glyph)
 	glyph_bytes := font_bytes[offset : offset + glyphs_bytes_len]
 	glyphs_slice := slice.reinterpret([]Glyph, glyph_bytes)
 	offset += glyphs_bytes_len
 
+	stripes_bytes_len := int(stripe_count) * size_of(Stripe)
+	stripe_bytes := font_bytes[offset : offset + stripes_bytes_len]
+	stripes_slice := slice.reinterpret([]Stripe, stripe_bytes)
+	offset += stripes_bytes_len
+
 	curves_bytes_len := int(curve_count) * 12
 	curve_bytes := font_bytes[offset : offset + curves_bytes_len]
 
 	curves_to_copy := min(curve_count, MAX_CURVES - total_curves_loaded)
+	stripes_to_copy := min(stripe_count, u32(MAX_STRIPES_BUF) - total_stripes_loaded)
+
 	glyphs := make(map[rune]Glyph, glyph_count)
 
 	for g in glyphs_slice {
 		adjusted_g := g
-		adjusted_g.curve_start += total_curves_loaded
+		adjusted_g.stripe_index += total_stripes_loaded
+		glyphs[g.unicode] = adjusted_g
+	}
 
-		if adjusted_g.curve_start >= MAX_CURVES {
-			adjusted_g.curve_count = 0
-		} else if adjusted_g.curve_start + adjusted_g.curve_count > MAX_CURVES {
-			adjusted_g.curve_count = MAX_CURVES - adjusted_g.curve_start
+	if stripes_to_copy > 0 {
+		stripes_copied := make([]Stripe, stripes_to_copy)
+		defer delete(stripes_copied)
+		mem.copy(raw_data(stripes_copied), raw_data(stripe_bytes), int(stripes_to_copy) * size_of(Stripe))
+
+		for &st in stripes_copied {
+			st.curve_start += total_curves_loaded
 		}
 
-		glyphs[g.unicode] = adjusted_g
+		dest_ptr := rawptr(uintptr(vks.stripe_buffer_mapped) + uintptr(total_stripes_loaded * size_of(Stripe)))
+		mem.copy(dest_ptr, raw_data(stripes_copied), int(stripes_to_copy) * size_of(Stripe))
+		total_stripes_loaded += stripes_to_copy
 	}
 
 	if curves_to_copy > 0 {
@@ -185,17 +210,20 @@ draw_text :: proc(font: Font, text: string, pos: Vec2, font_size: f32, color := 
 
 		glyph := font[char] or_else font['?']
 
-		if glyph.curve_count > 0 {
-			dest := Rect{{x, y}, {x, y} + font_size}
-			if !rect_overlaps(dest, scissor) do continue
+		dest := Rect{
+			{x, y} + glyph.bounds.pos * font_size,
+			{x, y} + glyph.bounds.size * font_size,
+		}
+		dest_screen := Rect{dest.pos, dest.size - dest.pos}
 
+		if rect_overlaps(dest_screen, scissor) {
 			append(&instances,
 				Instance{
 					dest   = dest,
-					src    = {{0, 0}, {1, 1}},
+					src    = glyph.bounds,
 					color  = color,
-					radius = f32(glyph.curve_count),
-					index  = glyph.curve_start,
+					radius = f32(STRIPE_COUNT),
+					index  = glyph.stripe_index,
 					kind   = .Text,
 				}
 			)
