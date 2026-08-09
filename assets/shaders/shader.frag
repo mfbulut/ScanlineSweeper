@@ -1,14 +1,14 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : enable
-#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
-#extension GL_EXT_shader_16bit_storage : require
-
-layout(set = 0, binding = 0) uniform sampler2D textures[];
 
 struct Curve {
-    f16vec2 p0;
-    f16vec2 p1;
-    f16vec2 p2;
+    vec2 p0;
+    vec2 p1;
+    vec2 p2;
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer CurveBuffer {
+    Curve curves[];
 };
 
 struct Stripe {
@@ -16,11 +16,7 @@ struct Stripe {
     uint curve_count;
 };
 
-layout(std430, set = 0, binding = 2) readonly buffer CurveBuffer {
-    Curve curves[];
-};
-
-layout(std430, set = 0, binding = 3) readonly buffer StripeBuffer {
+layout(std430, set = 0, binding = 2) readonly buffer StripeBuffer {
     Stripe stripes[];
 };
 
@@ -29,15 +25,10 @@ layout(location = 1) in vec4 in_color;
 layout(location = 2) in vec2 in_sdf_pos;
 layout(location = 3) in vec2 in_half_size;
 layout(location = 4) in flat float in_radius;
-layout(location = 5) in flat uint in_kind;
-layout(location = 6) in flat uint in_index;
-layout(location = 7) in vec4 in_src_bounds;
+layout(location = 5) in flat uint in_index;
+layout(location = 6) in vec4 in_bounds;
 
 layout(location = 0) out vec4 out_color;
-
-#define KIND_RECT    0u
-#define KIND_TEXTURE 1u
-#define KIND_TEXT    2u
 
 float rect_sdf(vec2 pos, vec2 half_size, float r) {
     vec2 q = abs(pos) - half_size + r;
@@ -63,39 +54,19 @@ float intersect_monotonic(float qa, float c0, float c1, float c2, float target) 
 }
 
 float scanline_sweep(vec2 size, vec2 offset, vec2 p0, vec2 p1, vec2 p2) {
-    if (abs(p2.y - p0.y) < 1e-5) return 0.0;
     if (max(p0.y, p2.y) <= offset.y || min(p0.y, p2.y) >= offset.y + size.y) {
         return 0.0;
     }
-
-    vec2 delta = p2 - p0;
 
     p0 -= offset;
     p1 -= offset;
     p2 -= offset;
 
-    if (min(p0.x, p2.x) >= size.x) {
-        return 0.0;
-    }
-
-    if (p0.x == p1.x && p0.x == p2.x) {
-        if (p0.x >= size.x) {
-            return 0.0;
-        }
-
-        float top = min(max(p0.y, p2.y), size.y);
-        float bottom = max(min(p0.y, p2.y), 0.0);
-
-        float h = top - bottom;
-        float b = min(size.x, size.x - p0.x);
-
-        return sign(delta.y) * b * h;
-    }
-
     float qa = fma(-2.0, p1.y, p0.y + p2.y);
     float bt = intersect_monotonic(qa, p0.y, p1.y, p2.y, 0.0);
     float tt = intersect_monotonic(qa, p0.y, p1.y, p2.y, size.y);
 
+    vec2 delta = p2 - p0;
     float v_min_t = delta.y > 0.0 ? bt : tt;
     float v_max_t = delta.y > 0.0 ? tt : bt;
 
@@ -164,36 +135,27 @@ void main() {
     float alpha = 1.0;
     vec4 tex_color = vec4(1.0);
 
-    if (in_kind == KIND_TEXTURE) {
-        tex_color = texture(textures[nonuniformEXT(in_index)], in_uv);
-    }
-
-    if (in_kind == KIND_RECT || in_kind == KIND_TEXTURE) {
+    if (in_index == 0) {
         float safe_radius = min(in_radius, min(in_half_size.x, in_half_size.y));
         float dist = rect_sdf(in_sdf_pos, in_half_size, safe_radius);
-        float aa = fwidth(dist);
-        float feather = aa * 0.5;
+        float feather = fwidth(dist) * 0.5;
         alpha = 1.0 - smoothstep(-feather, feather, dist);
-    }
-
-    if (in_kind == KIND_TEXT) {
-        float stripe_count_float = in_radius;
-
+    } else {
         vec2 pixel_size = fwidth(in_uv);
         vec2 pixel_offset = in_uv - 0.5 * pixel_size;
 
-        float y_min = in_src_bounds.y;
-        float y_max = in_src_bounds.w;
+        float y_min = in_bounds.y;
+        float y_max = in_bounds.w;
         float y_range = max(y_max - y_min, 1e-6);
         float t = clamp((in_uv.y - y_min) / y_range, 0.0, 0.9999);
-        uint stripe_idx = uint(t * stripe_count_float);
+        uint stripe_idx = uint(t * 8.0);
 
         Stripe s = stripes[in_index + stripe_idx];
 
         float total_coverage = 0.0;
         for (uint i = 0u; i < s.curve_count; i++) {
             Curve c = curves[s.curve_start + i];
-            total_coverage += scanline_sweep(pixel_size, pixel_offset, vec2(c.p0), vec2(c.p1), vec2(c.p2));
+            total_coverage += scanline_sweep(pixel_size, pixel_offset, c.p0, c.p1, c.p2);
         }
 
         float area = pixel_size.x * pixel_size.y;

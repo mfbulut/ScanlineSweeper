@@ -1,19 +1,13 @@
 package main
 
 import "core:math"
-import "core:slice"
 import "fx"
 
-font: fx.Font
-all_runes: [dynamic]rune
 scroll_target: f32
 scroll_current: f32
 
 main :: proc() {
-	fx.init("Scanline Sweeper", {1280, 800})
-	font = fx.font_load(#load("assets/fonts/SourceSans3-Medium.bin"))
-	for r in font do append(&all_runes, r)
-	slice.sort(all_runes[:])
+	fx.init("Scanline Sweeper")
 	fx.run(frame)
 }
 
@@ -26,8 +20,8 @@ frame :: proc() {
 	y := scroll_current + 35.0
 
 	for text in example_texts {
-		fx.draw_text(font, text, {30.0, y}, 34.0, {240, 244, 255, 255})
-		y += 44.0
+		fx.draw_text(text, {30.0, y}, 48.0, {240, 244, 255, 255})
+		y += 60.0
 	}
 }
 

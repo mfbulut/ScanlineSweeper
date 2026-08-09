@@ -10,7 +10,6 @@ import "vendor:stb/truetype"
 
 STRIPE_COUNT :: 8
 
-Vec2f16 :: [2]f16
 Vec2 :: [2]f32
 
 Rect :: struct {
@@ -23,9 +22,9 @@ Stripe :: struct {
 }
 
 Curve :: struct {
-	p0:   Vec2f16,
-	p1:   Vec2f16,
-	p2:   Vec2f16,
+	p0:   Vec2,
+	p1:   Vec2,
+	p2:   Vec2,
 }
 
 Glyph :: struct {
@@ -73,13 +72,13 @@ subdivide_to_monotonic :: proc(p0, p1, p2: Vec2, out_curves: ^[dynamic]Curve) {
 		if t_x > 1e-4 && t_x < 0.9996 {
 			left, right := divide_curve(c[0], c[1], c[2], t_x)
 			if abs(left[0].y - left[2].y) >= 1e-6 {
-				append(out_curves, Curve{p0 = Vec2f16(left[0]), p1 = Vec2f16(left[1]), p2 = Vec2f16(left[2])})
+				append(out_curves, Curve{p0 = left[0], p1 = left[1], p2 = left[2]})
 			}
 			if abs(right[0].y - right[2].y) >= 1e-6 {
-				append(out_curves, Curve{p0 = Vec2f16(right[0]), p1 = Vec2f16(right[1]), p2 = Vec2f16(right[2])})
+				append(out_curves, Curve{p0 = right[0], p1 = right[1], p2 = right[2]})
 			}
 		} else {
-			append(out_curves, Curve{p0 = Vec2f16(c[0]), p1 = Vec2f16(c[1]), p2 = Vec2f16(c[2])})
+			append(out_curves, Curve{p0 = c[0], p1 = c[1], p2 = c[2]})
 		}
 	}
 }
@@ -100,7 +99,7 @@ process_font_file :: proc(font_path, out_bin_path: string) -> bool {
 
 	ascent, descent: i32
 	truetype.GetFontVMetrics(&info, &ascent, &descent, nil)
-	em_scale := 1.0 / f32(ascent - descent)
+	em_scale := truetype.ScaleForMappingEmToPixels(&info, 1.0)
 
 	glyphs: [dynamic]Glyph
 	curves: [dynamic]Curve
@@ -161,22 +160,17 @@ process_font_file :: proc(font_path, out_bin_path: string) -> bool {
 		if len(glyph_curves) > 0 {
 			min_pos := Vec2{1e9, 1e9}
 			max_pos := Vec2{-1e9, -1e9}
+
 			for c in glyph_curves {
-				cp0 := Vec2(c.p0)
-				cp1 := Vec2(c.p1)
-				cp2 := Vec2(c.p2)
-				min_pos.x = min(min_pos.x, cp0.x, cp1.x, cp2.x)
-				min_pos.y = min(min_pos.y, cp0.y, cp1.y, cp2.y)
-				max_pos.x = max(max_pos.x, cp0.x, cp1.x, cp2.x)
-				max_pos.y = max(max_pos.y, cp0.y, cp1.y, cp2.y)
+				min_pos = linalg.min(min_pos, linalg.min(c.p0, c.p1, c.p2))
+				max_pos = linalg.max(max_pos, linalg.max(c.p0, c.p1, c.p2))
 			}
-			min_pos -= 0.001
-			max_pos += 0.001
-			bounds = Rect{pos = min_pos, size = max_pos}
+
+			bounds = Rect{pos = min_pos - 0.001, size = max_pos + 0.001}
 
 			y_range := max_pos.y - min_pos.y
 			stripe_height := y_range / f32(STRIPE_COUNT)
-			margin := stripe_height * 0.10
+			margin := stripe_height * 0.2
 
 			for s in 0..<STRIPE_COUNT {
 				stripe_y_min := min_pos.y + f32(s) * stripe_height
@@ -185,8 +179,8 @@ process_font_file :: proc(font_path, out_bin_path: string) -> bool {
 				stripe_start := u32(len(curves))
 
 				for c in glyph_curves {
-					c_y_min := min(f32(c.p0.y), f32(c.p1.y), f32(c.p2.y))
-					c_y_max := max(f32(c.p0.y), f32(c.p1.y), f32(c.p2.y))
+					c_y_min := linalg.min(c.p0.y, c.p1.y, c.p2.y)
+					c_y_max := linalg.max(c.p0.y, c.p1.y, c.p2.y)
 
 					if c_y_max > stripe_y_min - margin && c_y_min < stripe_y_max + margin {
 						append(&curves, c)
@@ -217,24 +211,20 @@ process_font_file :: proc(font_path, out_bin_path: string) -> bool {
 
 	glyph_count := u32(len(glyphs))
 	count_bytes := mem.ptr_to_bytes(&glyph_count)
-	for b in count_bytes do append(&out_buffer, b)
+	append(&out_buffer, ..count_bytes)
 
 	curve_count := u32(len(curves))
 	curve_count_bytes := mem.ptr_to_bytes(&curve_count)
-	for b in curve_count_bytes do append(&out_buffer, b)
-
-	stripe_count := u32(len(stripes))
-	stripe_count_bytes := mem.ptr_to_bytes(&stripe_count)
-	for b in stripe_count_bytes do append(&out_buffer, b)
+	append(&out_buffer, ..curve_count_bytes)
 
 	glyphs_bytes := slice.to_bytes(glyphs[:])
-	for b in glyphs_bytes do append(&out_buffer, b)
+	append(&out_buffer, ..glyphs_bytes)
 
 	stripes_bytes := slice.to_bytes(stripes[:])
-	for b in stripes_bytes do append(&out_buffer, b)
+	append(&out_buffer, ..stripes_bytes)
 
 	curves_bytes := slice.to_bytes(curves[:])
-	for b in curves_bytes do append(&out_buffer, b)
+	append(&out_buffer, ..curves_bytes)
 
 	write_err := os.write_entire_file(out_bin_path, out_buffer[:])
 	if write_err != nil {
@@ -242,7 +232,7 @@ process_font_file :: proc(font_path, out_bin_path: string) -> bool {
 		return false
 	}
 
-	fmt.printf("Generated %s from %s (%d glyphs, %d stripes, %d curves, total %d bytes)\n", out_bin_path, font_path, glyph_count, stripe_count, curve_count, len(out_buffer))
+	fmt.printf("Generated %s from %s (%d glyphs, %d curves, total %d bytes)\n", out_bin_path, font_path, glyph_count, curve_count, len(out_buffer))
 	return true
 }
 

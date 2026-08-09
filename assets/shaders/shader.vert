@@ -10,10 +10,9 @@ struct Instance {
     uvec4 colors;
     float radius;
     uint index;
-    uint kind;
 };
 
-layout(std430, set = 0, binding = 1) readonly buffer InstanceBuffer {
+layout(std430, set = 0, binding = 0) readonly buffer InstanceBuffer {
     Instance instances[];
 };
 
@@ -22,9 +21,8 @@ layout(location = 1) out vec4 out_color;
 layout(location = 2) out vec2 out_sdf_pos;
 layout(location = 3) out vec2 out_half_size;
 layout(location = 4) out flat float out_radius;
-layout(location = 5) out flat uint out_kind;
-layout(location = 6) out flat uint out_tex_idx;
-layout(location = 7) out vec4 out_src_bounds;
+layout(location = 5) out flat uint out_index;
+layout(location = 6) out vec4 out_bounds;
 
 vec4 unpack_color(uint packed) {
     return vec4(
@@ -46,7 +44,6 @@ void main() {
 
     vec2 half_size = (inst.dest.zw - inst.dest.xy) * 0.5;
     vec2 local = corner * 2.0 - 1.0;
-
     vec2 pixel_pos = mix(inst.dest.xy, inst.dest.zw, corner);
 
     gl_Position = vec4(
@@ -59,7 +56,6 @@ void main() {
     out_sdf_pos = local * half_size;
     out_half_size = half_size;
     out_radius = inst.radius;
-    out_tex_idx = inst.index;
-    out_kind = inst.kind;
-    out_src_bounds = inst.src;
+    out_index = inst.index;
+    out_bounds = inst.src;
 }
