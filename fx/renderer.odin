@@ -166,32 +166,3 @@ draw_text :: proc(text: string, pos: Vec2, font_size: f32, color := cast([4]Colo
 		x += glyph.advance * font_size
 	}
 }
-
-draw_text_rect :: proc(text: string, bounds: Rect, font_size: f32, color := cast([4]Color)WHITE, center_x := false, center_y := false) {
-	if text == "" do return
-	size := measure_text(text, font_size)
-	x := bounds.pos.x + (center_x ? (bounds.size.x - size.x) * 0.5 : 0)
-	y := bounds.pos.y + (center_y ? (bounds.size.y - font_size) * 0.5 : 0)
-	draw_text(text, {x, y}, font_size, color)
-}
-
-measure_text :: proc(text: string, font_size: f32) -> (size: Vec2) {
-	if text == "" do return
-
-	cursor_x := f32(0)
-	size.y = font_size
-
-	for char in text {
-		if char == '\n' {
-			cursor_x = 0
-			size.y += font_size
-			continue
-		}
-
-		glyph := font[char] or_else font['?']
-		cursor_x += glyph.advance * font_size
-		size.x = max(size.x, cursor_x)
-	}
-
-	return
-}
