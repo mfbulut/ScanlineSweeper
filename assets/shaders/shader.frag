@@ -1,5 +1,7 @@
 #version 450
-#extension GL_EXT_nonuniform_qualifier : enable
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 
 struct Curve {
     vec2 p0;
@@ -7,7 +9,7 @@ struct Curve {
     vec2 p2;
 };
 
-layout(std430, set = 0, binding = 1) readonly buffer CurveBuffer {
+layout(buffer_reference, scalar) readonly buffer CurveBuffer {
     Curve curves[];
 };
 
@@ -16,24 +18,23 @@ struct Stripe {
     uint curve_count;
 };
 
-layout(std430, set = 0, binding = 2) readonly buffer StripeBuffer {
+layout(buffer_reference, scalar) readonly buffer StripeBuffer {
     Stripe stripes[];
 };
 
-layout(location = 0) in vec2 in_uv;
+layout(push_constant) uniform PushConstants {
+    vec2 screen_size;
+    uint64_t instances_addr;
+    uint64_t curves_addr;
+    uint64_t stripes_addr;
+} pc;
+
+layout(location = 0) in vec2 in_pos;
 layout(location = 1) in vec4 in_color;
-layout(location = 2) in vec2 in_sdf_pos;
-layout(location = 3) in vec2 in_half_size;
-layout(location = 4) in flat float in_radius;
-layout(location = 5) in flat uint in_index;
-layout(location = 6) in vec4 in_bounds;
+layout(location = 2) in flat uint in_index;
+layout(location = 3) in flat vec4 in_uv;
 
 layout(location = 0) out vec4 out_color;
-
-float rect_sdf(vec2 pos, vec2 half_size, float r) {
-    vec2 q = abs(pos) - half_size + r;
-    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
-}
 
 vec2 evaluate_bezier(vec2 p0, vec2 p1, vec2 p2, float t) {
     vec2 a = mix(p0, p1, t);
@@ -133,28 +134,28 @@ float scanline_sweep(vec2 size, vec2 offset, vec2 p0, vec2 p1, vec2 p2) {
 
 void main() {
     float alpha = 1.0;
-    vec4 tex_color = vec4(1.0);
 
-    if (in_index == 0) {
-        float safe_radius = min(in_radius, min(in_half_size.x, in_half_size.y));
-        float dist = rect_sdf(in_sdf_pos, in_half_size, safe_radius);
-        float feather = fwidth(dist) * 0.5;
-        alpha = 1.0 - smoothstep(-feather, feather, dist);
+    if (in_index == 0u) {
+        vec2 q = abs(in_pos) - in_uv.xy;
+        float dist = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - in_uv.z;
+        alpha = clamp(0.5 - dist, 0.0, 1.0);
     } else {
-        vec2 pixel_size = fwidth(in_uv);
-        vec2 pixel_offset = in_uv - 0.5 * pixel_size;
+        vec2 pixel_size = fwidth(in_pos);
+        vec2 pixel_offset = in_pos - 0.5 * pixel_size;
 
-        float y_min = in_bounds.y;
-        float y_max = in_bounds.w;
+        float y_min = in_uv.y;
+        float y_max = in_uv.w;
         float y_range = max(y_max - y_min, 1e-6);
-        float t = clamp((in_uv.y - y_min) / y_range, 0.0, 0.9999);
+        float t = clamp((in_pos.y - y_min) / y_range, 0.0, 0.9999);
         uint stripe_idx = uint(t * 8.0);
 
-        Stripe s = stripes[in_index + stripe_idx];
+        StripeBuffer stripe_buf = StripeBuffer(pc.stripes_addr);
+        Stripe s = stripe_buf.stripes[in_index + stripe_idx];
 
+        CurveBuffer curve_buf = CurveBuffer(pc.curves_addr);
         float total_coverage = 0.0;
         for (uint i = 0u; i < s.curve_count; i++) {
-            Curve c = curves[s.curve_start + i];
+            Curve c = curve_buf.curves[s.curve_start + i];
             total_coverage += scanline_sweep(pixel_size, pixel_offset, c.p0, c.p1, c.p2);
         }
 
@@ -162,6 +163,6 @@ void main() {
         alpha = clamp(abs(total_coverage) / area, 0.0, 1.0);
     }
 
-    out_color = in_color * tex_color;
+    out_color = in_color;
     out_color.a *= alpha;
 }

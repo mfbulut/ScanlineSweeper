@@ -7,9 +7,21 @@ import "core:mem"
 import "core:dynlib"
 import vk "vendor:vulkan"
 
-MAX_INSTANCES   :: 16 * mem.Megabyte / size_of(Instance)
-MAX_CURVES      :: 16 * mem.Megabyte / 24
-MAX_STRIPES_BUF :: 16 * mem.Megabyte / 8
+MAX_INSTANCES :: 16 * mem.Megabyte / size_of(Instance)
+
+Gpu_Buffer :: struct {
+	buffer:  vk.Buffer,
+	memory:  vk.DeviceMemory,
+	address: vk.DeviceAddress,
+	mapped:  rawptr,
+}
+
+Push_Constants :: struct #packed {
+	screen_size:    [2]f32,
+	instances_addr: vk.DeviceAddress,
+	curves_addr:    vk.DeviceAddress,
+	stripes_addr:   vk.DeviceAddress,
+}
 
 swapchain: struct {
 	swapchain: vk.SwapchainKHR,
@@ -19,23 +31,22 @@ swapchain: struct {
 }
 
 vks: struct {
-	gpu: vk.PhysicalDevice,
-	device: vk.Device,
-	queue: vk.Queue,
-	surface: vk.SurfaceKHR,
+	surface:           vk.SurfaceKHR,
+	gpu:               vk.PhysicalDevice,
+	device:            vk.Device,
+	queue:             vk.Queue,
 
-	command_buffer: vk.CommandBuffer,
+	command_buffer:    vk.CommandBuffer,
 	acquire_semaphore: vk.Semaphore,
-	in_flight_fence: vk.Fence,
+	in_flight_fence:   vk.Fence,
 
-	pipeline: vk.Pipeline,
-	pipeline_layout: vk.PipelineLayout,
+	pipeline:          vk.Pipeline,
+	pipeline_layout:   vk.PipelineLayout,
 
-	descriptor_set: vk.DescriptorSet,
-	instance_buffer: rawptr,
-	curve_buffer: rawptr,
-	stripe_buffer: rawptr,
-	clear_color: [4]f32,
+	instance_buffer:   Gpu_Buffer,
+	curve_buffer:      Gpu_Buffer,
+	stripe_buffer:     Gpu_Buffer,
+	clear_color:       [4]f32,
 }
 
 vk_init :: proc() {
@@ -113,7 +124,6 @@ vk_init :: proc() {
 		vk.CreateDebugUtilsMessengerEXT(instance, &debug_info, nil, &debug_messenger)
 	}
 
-
  	// Create Surface
 	surface_create_info := vk.Win32SurfaceCreateInfoKHR {
 		sType = .WIN32_SURFACE_CREATE_INFO_KHR,
@@ -121,7 +131,6 @@ vk_init :: proc() {
 		hwnd = window.hwnd,
 	}
 	vk.CreateWin32SurfaceKHR(instance, &surface_create_info, nil, &vks.surface)
-
 
  	// Pick Physical Device
 	device_count: u32
@@ -139,7 +148,6 @@ vk_init :: proc() {
 			break
 		}
 	}
-
 
  	// Create Logical Device
 	queue_count: u32
@@ -178,6 +186,16 @@ vk_init :: proc() {
 		descriptorBindingSampledImageUpdateAfterBind = true,
 		runtimeDescriptorArray = true,
 		shaderSampledImageArrayNonUniformIndexing = true,
+		bufferDeviceAddress = true,
+		scalarBlockLayout = true,
+	}
+
+	features_10 := vk.PhysicalDeviceFeatures2 {
+		sType = .PHYSICAL_DEVICE_FEATURES_2,
+		pNext = &features_12,
+		features = {
+			shaderInt64 = true,
+		},
 	}
 
 	device_extensions := [?]cstring {
@@ -186,7 +204,7 @@ vk_init :: proc() {
 
 	device_create_info := vk.DeviceCreateInfo {
 		sType = .DEVICE_CREATE_INFO,
-		pNext = &features_12,
+		pNext = &features_10,
 		queueCreateInfoCount = 1,
 		pQueueCreateInfos = &queue_create_info,
 		enabledExtensionCount = len(device_extensions),
@@ -221,91 +239,27 @@ vk_init :: proc() {
 	vk.CreateSemaphore(vks.device, &semaphore_info, nil, &vks.acquire_semaphore)
 	vk.CreateFence(vks.device, &fence_info, nil, &vks.in_flight_fence)
 
-
- 	// Bindless Descriptor Setup
-
-	binding_flags := [?]vk.DescriptorBindingFlags {
-		{.UPDATE_AFTER_BIND, .PARTIALLY_BOUND},
-		{},
-		{},
-	}
-	layout_binding_flags := vk.DescriptorSetLayoutBindingFlagsCreateInfo {
-		sType = .DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-		bindingCount = 3,
-		pBindingFlags = &binding_flags[0],
-	}
-	bindings := [?]vk.DescriptorSetLayoutBinding {
-		{
-			binding = 0,
-			descriptorType = .STORAGE_BUFFER,
-			descriptorCount = 1,
-			stageFlags = {.VERTEX},
-		},
-		{
-			binding = 1,
-			descriptorType = .STORAGE_BUFFER,
-			descriptorCount = 1,
-			stageFlags = {.FRAGMENT},
-		},
-		{
-			binding = 2,
-			descriptorType = .STORAGE_BUFFER,
-			descriptorCount = 1,
-			stageFlags = {.FRAGMENT},
-		},
-	}
-
-	layout_info := vk.DescriptorSetLayoutCreateInfo {
-		sType = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		pNext = &layout_binding_flags,
-		flags = {.UPDATE_AFTER_BIND_POOL},
-		bindingCount = 3,
-		pBindings = &bindings[0],
-	}
-	descriptor_set_layout: vk.DescriptorSetLayout
-	vk.CreateDescriptorSetLayout(vks.device, &layout_info, nil, &descriptor_set_layout)
-
-	pool_sizes := [?]vk.DescriptorPoolSize {
-		{ type = .STORAGE_BUFFER, descriptorCount = 3 },
-	}
-	desc_pool_info := vk.DescriptorPoolCreateInfo {
-		sType = .DESCRIPTOR_POOL_CREATE_INFO,
-		flags = {.UPDATE_AFTER_BIND},
-		maxSets = 1,
-		poolSizeCount = len(pool_sizes),
-		pPoolSizes = &pool_sizes[0],
-	}
-	descriptor_pool: vk.DescriptorPool
-	vk.CreateDescriptorPool(vks.device, &desc_pool_info, nil, &descriptor_pool)
-
-	alloc_set_info := vk.DescriptorSetAllocateInfo {
-		sType = .DESCRIPTOR_SET_ALLOCATE_INFO,
-		descriptorPool = descriptor_pool,
-		descriptorSetCount = 1,
-		pSetLayouts = &descriptor_set_layout,
-	}
-	vk.AllocateDescriptorSets(vks.device, &alloc_set_info, &vks.descriptor_set)
-
  	// Buffers
-	create_buffer_descriptor(MAX_INSTANCES * size_of(Instance), 0, &vks.instance_buffer)
-	create_buffer_descriptor(MAX_CURVES * 24, 1, &vks.curve_buffer)
-	create_buffer_descriptor(MAX_STRIPES_BUF * 8, 2, &vks.stripe_buffer)
+	vks.instance_buffer = create_buffer(MAX_INSTANCES * size_of(Instance))
+	vks.curve_buffer    = create_buffer(16 * mem.Megabyte)
+	vks.stripe_buffer   = create_buffer(16 * mem.Megabyte)
 
  	// Create Pipeline
 	vert_spv := #load("../assets/shaders/shader.vert.spv", []u32)
 	frag_spv := #load("../assets/shaders/shader.frag.spv", []u32)
 
 	push_constant_range := vk.PushConstantRange {
-		stageFlags = {.VERTEX},
-		size = size_of([2]f32),
+		stageFlags = {.VERTEX, .FRAGMENT},
+		offset     = 0,
+		size       = size_of(Push_Constants),
 	}
 
 	pipeline_layout_info := vk.PipelineLayoutCreateInfo {
-		sType = .PIPELINE_LAYOUT_CREATE_INFO,
-		setLayoutCount = 1,
-		pSetLayouts = &descriptor_set_layout,
+		sType                  = .PIPELINE_LAYOUT_CREATE_INFO,
+		setLayoutCount         = 0,
+		pSetLayouts            = nil,
 		pushConstantRangeCount = 1,
-		pPushConstantRanges = &push_constant_range,
+		pPushConstantRanges    = &push_constant_range,
 	}
 
 	vk.CreatePipelineLayout(vks.device, &pipeline_layout_info, nil, &vks.pipeline_layout)
@@ -552,23 +506,23 @@ vk_render :: proc() {
 	}
 	vk.CmdSetViewport(cmd, 0, 1, &viewport)
 
-	screen_size := window_size()
-	vk.CmdPushConstants(cmd, vks.pipeline_layout, {.VERTEX}, 0, size_of(screen_size), &screen_size)
-	vk.CmdBindDescriptorSets(cmd, .GRAPHICS, vks.pipeline_layout, 0, 1, &vks.descriptor_set, 0, nil)
+	scissor := vk.Rect2D {
+		offset = {0, 0},
+		extent = {u32(window.size.x), u32(window.size.y)},
+	}
+	vk.CmdSetScissor(cmd, 0, 1, &scissor)
+
+	pc := Push_Constants {
+		screen_size    = window_size(),
+		instances_addr = vks.instance_buffer.address,
+		curves_addr    = vks.curve_buffer.address,
+		stripes_addr   = vks.stripe_buffer.address,
+	}
+	vk.CmdPushConstants(cmd, vks.pipeline_layout, {.VERTEX, .FRAGMENT}, 0, size_of(pc), &pc)
 
 	if len(instances) > 0 {
-		mem.copy(vks.instance_buffer, raw_data(instances[:]), len(instances) * size_of(Instance))
-		scale := dpi_scale()
-
-		for b in batches {
-			rect := vk.Rect2D {
-				offset = {i32(b.scissor.pos.x * scale), i32(b.scissor.pos.y * scale)},
-				extent = {u32(b.scissor.size.x * scale), u32(b.scissor.size.y * scale)},
-			}
-
-			vk.CmdSetScissor(cmd, 0, 1, &rect)
-			vk.CmdDraw(cmd, 4, b.count, 0, b.offset)
-		}
+		mem.copy(vks.instance_buffer.mapped, raw_data(instances[:]), len(instances) * size_of(Instance))
+		vk.CmdDraw(cmd, 4, u32(len(instances)), 0, 0)
 	}
 
 	vk.CmdEndRendering(cmd)
@@ -622,21 +576,17 @@ vk_render :: proc() {
 	}
 }
 
-create_buffer_descriptor :: proc(
-	size: vk.DeviceSize,
-	dst_binding: u32,
-	mapped_ptr: ^rawptr = nil,
-) -> (buffer: vk.Buffer, memory: vk.DeviceMemory) {
+create_buffer :: proc(size: vk.DeviceSize) -> (buf: Gpu_Buffer) {
 	create_info := vk.BufferCreateInfo {
 		sType = .BUFFER_CREATE_INFO,
 		size = size,
-		usage = {.STORAGE_BUFFER},
+		usage = {.STORAGE_BUFFER, .SHADER_DEVICE_ADDRESS},
 		sharingMode = .EXCLUSIVE,
 	}
-	vk.CreateBuffer(vks.device, &create_info, nil, &buffer)
+	vk.CreateBuffer(vks.device, &create_info, nil, &buf.buffer)
 
 	mem_reqs: vk.MemoryRequirements
-	vk.GetBufferMemoryRequirements(vks.device, buffer, &mem_reqs)
+	vk.GetBufferMemoryRequirements(vks.device, buf.buffer, &mem_reqs)
 
 	mem_props: vk.PhysicalDeviceMemoryProperties
 	vk.GetPhysicalDeviceMemoryProperties(vks.gpu, &mem_props)
@@ -649,38 +599,31 @@ create_buffer_descriptor :: proc(
 			break
 		}
 	}
+
 	if memory_type_index == max(u32) {
 		panic("Failed to find suitable memory type!")
 	}
 
+	alloc_flags := vk.MemoryAllocateFlagsInfo {
+		sType = .MEMORY_ALLOCATE_FLAGS_INFO,
+		flags = {.DEVICE_ADDRESS},
+	}
+
 	alloc_info := vk.MemoryAllocateInfo {
 		sType = .MEMORY_ALLOCATE_INFO,
+		pNext = &alloc_flags,
 		allocationSize = mem_reqs.size,
 		memoryTypeIndex = memory_type_index,
 	}
-	vk.AllocateMemory(vks.device, &alloc_info, nil, &memory)
-	vk.BindBufferMemory(vks.device, buffer, memory, 0)
+	vk.AllocateMemory(vks.device, &alloc_info, nil, &buf.memory)
+	vk.BindBufferMemory(vks.device, buf.buffer, buf.memory, 0)
+	vk.MapMemory(vks.device, buf.memory, 0, vk.DeviceSize(vk.WHOLE_SIZE), {}, &buf.mapped)
 
-	if mapped_ptr != nil {
-		vk.MapMemory(vks.device, memory, 0, vk.DeviceSize(vk.WHOLE_SIZE), {}, mapped_ptr)
+	address_info := vk.BufferDeviceAddressInfo {
+		sType = .BUFFER_DEVICE_ADDRESS_INFO,
+		buffer = buf.buffer,
 	}
-
-	buffer_info := vk.DescriptorBufferInfo {
-		buffer = buffer,
-		range = vk.DeviceSize(vk.WHOLE_SIZE),
-	}
-
-	write_desc := vk.WriteDescriptorSet {
-		sType = .WRITE_DESCRIPTOR_SET,
-		dstSet = vks.descriptor_set,
-		dstBinding = dst_binding,
-		dstArrayElement = 0,
-		descriptorType = .STORAGE_BUFFER,
-		descriptorCount = 1,
-		pBufferInfo = &buffer_info,
-	}
-
-	vk.UpdateDescriptorSets(vks.device, 1, &write_desc, 0, nil)
+	buf.address = vk.GetBufferDeviceAddress(vks.device, &address_info)
 	return
 }
 
@@ -689,8 +632,6 @@ image_barrier :: proc(
 	old_layout, new_layout: vk.ImageLayout,
 	src_stage, dst_stage: vk.PipelineStageFlags2,
 	src_access, dst_access: vk.AccessFlags2,
-	base_mip_level := u32(0),
-	level_count := u32(1),
 ) {
 	barrier := vk.ImageMemoryBarrier2 {
 		sType = .IMAGE_MEMORY_BARRIER_2,
@@ -705,8 +646,8 @@ image_barrier :: proc(
 		image = image,
 		subresourceRange = {
 			aspectMask = {.COLOR},
-			baseMipLevel = base_mip_level,
-			levelCount = level_count,
+			baseMipLevel = 0,
+			levelCount = 1,
 			layerCount = 1,
 		},
 	}

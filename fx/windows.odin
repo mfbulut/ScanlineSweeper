@@ -2,7 +2,6 @@ package fx
 
 import "base:runtime"
 import "core:time"
-import "core:unicode/utf16"
 import win "core:sys/windows"
 
 Key_State :: enum { Held, Pressed, Released, Repeat }
@@ -32,7 +31,7 @@ init :: proc(title: string, size := [2]int{1280, 720}) {
 		hIcon         = win.LoadIconW(window.hInstance, cast(win.LPCWSTR)win.MAKEINTRESOURCEW(1)),
 		hCursor       = win.LoadCursorA(nil, win.IDC_ARROW),
 		hbrBackground = cast(win.HBRUSH)win.GetStockObject(win.BLACK_BRUSH),
-		lpszClassName = "Scanline Sweeper",
+		lpszClassName = "FX Renderer",
 	}
 
 	win.RegisterClassW(&wndclass)
@@ -53,7 +52,7 @@ init :: proc(title: string, size := [2]int{1280, 720}) {
 	ypos := (win.GetSystemMetrics(win.SM_CYSCREEN) - window_h) / 2
 
 	title16 := win.utf8_to_wstring(title, context.temp_allocator)
-	window.hwnd = win.CreateWindowExW(ex_style, "Scanline Sweeper", title16, dw_style, xpos, ypos, window_w, window_h, nil, nil, window.hInstance, nil)
+	window.hwnd = win.CreateWindowExW(ex_style, "FX Renderer", title16, dw_style, xpos, ypos, window_w, window_h, nil, nil, window.hInstance, nil)
 
 	scale := dpi_scale()
 	if scale != 1.0 {
@@ -124,7 +123,6 @@ window_is_minimized :: proc() -> bool {
 
 update :: proc(poll_msg := true) {
 	window.mouse_scroll = {0, 0}
-	reset_scissor()
 
 	for &state in window.key_state {
 		state -= {.Pressed, .Released, .Repeat}
@@ -141,12 +139,7 @@ update :: proc(poll_msg := true) {
 	cur_time := time.now()
 	window.frame_time = cast(f32)time.duration_seconds(time.diff(window.prev_time, cur_time))
 	window.prev_time = cur_time
-
-	if window.frame_callback != nil {
-		window.frame_callback()
-	}
-
-	flush()
+	window.frame_callback()
 
 	if window.size.x > 0 && window.size.y > 0 {
 		if window.is_resized {
@@ -158,7 +151,6 @@ update :: proc(poll_msg := true) {
 	}
 
 	clear(&instances)
-	clear(&batches)
 }
 
 run :: proc(cb: proc()) {

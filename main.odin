@@ -19,14 +19,14 @@ frame :: proc() {
 	scroll_current = math.lerp(scroll_current, scroll_target, 1.0 - math.pow(0.0001, dt))
 	y := scroll_current + 35.0
 
-	for text in example_texts {
-		fx.draw_text(text, {30.0, y}, 48.0, {240, 244, 255, 255})
-		y += 60.0
+	for text in sample_texts {
+		fx.draw_text(text, {30.0, y}, 24.0, {240, 244, 255, 255})
+		y += 30.0
 	}
 }
 
 @(rodata)
-example_texts := []string{
+sample_texts := []string{
 	"latin (english): The quick brown fox jumps over the lazy dog.",
 	"latin (french): Voix ambiguë d'un cœur qui au zéphyr préfère les jattes de kiwi.",
 	"latin (german): Victor jagt zwölf Boxkämpfer quer über den großen Sylter Deich.",

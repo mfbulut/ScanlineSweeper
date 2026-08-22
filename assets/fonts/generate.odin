@@ -170,7 +170,7 @@ process_font_file :: proc(font_path, out_bin_path: string) -> bool {
 
 			y_range := max_pos.y - min_pos.y
 			stripe_height := y_range / f32(STRIPE_COUNT)
-			margin := stripe_height * 0.2
+			margin := stripe_height * 0.5
 
 			for s in 0..<STRIPE_COUNT {
 				stripe_y_min := min_pos.y + f32(s) * stripe_height
@@ -194,7 +194,7 @@ process_font_file :: proc(font_path, out_bin_path: string) -> bool {
 			}
 		} else {
 			for s in 0..<STRIPE_COUNT {
-				append(&stripes, Stripe{curve_start = 0, curve_count = 0})
+				append(&stripes, Stripe{})
 			}
 		}
 
