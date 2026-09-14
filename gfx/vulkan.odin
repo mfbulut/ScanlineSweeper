@@ -1,7 +1,4 @@
-package fx
-
-import "base:runtime"
-import "core:os"
+package gfx
 
 import "core:mem"
 import "core:dynlib"
@@ -24,14 +21,14 @@ Push_Constants :: struct #packed {
 }
 
 swapchain: struct {
-	swapchain: vk.SwapchainKHR,
-	images: []vk.Image,
-	image_views: []vk.ImageView,
+	surface:            vk.SurfaceKHR,
+	swapchain:          vk.SwapchainKHR,
+	images:             []vk.Image,
+	image_views:        []vk.ImageView,
 	present_semaphores: []vk.Semaphore,
 }
 
 vks: struct {
-	surface:           vk.SurfaceKHR,
 	gpu:               vk.PhysicalDevice,
 	device:            vk.Device,
 	queue:             vk.Queue,
@@ -51,86 +48,31 @@ vks: struct {
 
 vk_init :: proc() {
 	// Load Vulkan library
-	lib := dynlib.load_library("vulkan-1.dll") or_else panic("Failed to load Vulkan library")
+	lib_name := "vulkan-1.dll" when ODIN_OS == .Windows else "libvulkan.so.1"
+	lib := dynlib.load_library(lib_name) or_else panic("Failed to load Vulkan library")
 	vkGetInstanceProcAddr := dynlib.symbol_address(lib, "vkGetInstanceProcAddr")
 	vk.load_proc_addresses(vkGetInstanceProcAddr)
 
- 	// Create Instance
-	when ODIN_DEBUG {
-		layer_count := u32(1)
-		val_layer := cstring("VK_LAYER_KHRONOS_validation")
-		layer_names := &val_layer
-	} else {
-		layer_count: u32
-		layer_names: ^cstring
-	}
-
-	extensions: [dynamic]cstring
-	append(&extensions, vk.KHR_SURFACE_EXTENSION_NAME)
-	append(&extensions, vk.KHR_WIN32_SURFACE_EXTENSION_NAME)
-	when ODIN_DEBUG {
-		append(&extensions, vk.EXT_DEBUG_UTILS_EXTENSION_NAME)
-	}
-
 	app_info := vk.ApplicationInfo {
 		sType = .APPLICATION_INFO,
-		pApplicationName = "Text Editor",
+		pApplicationName = "ScanlineSweeper",
 		apiVersion = vk.API_VERSION_1_3,
 	}
 
-	create_info := vk.InstanceCreateInfo {
-		sType = .INSTANCE_CREATE_INFO,
-		pApplicationInfo = &app_info,
-		enabledExtensionCount =  u32(len(extensions)),
-		ppEnabledExtensionNames = raw_data(extensions[:]),
-		enabledLayerCount = layer_count,
-		ppEnabledLayerNames = layer_names,
-	}
-
-	when ODIN_DEBUG {
-		debug_callback :: proc "system" (
-			messageSeverity: vk.DebugUtilsMessageSeverityFlagsEXT,
-			messageTypes: vk.DebugUtilsMessageTypeFlagsEXT,
-			pCallbackData: ^vk.DebugUtilsMessengerCallbackDataEXT,
-			pUserData: rawptr,
-		) -> b32 {
-			context = runtime.default_context()
-			when ODIN_DEBUG {
-				os.write_string(os.stderr, "Vulkan Validation: ")
-				if pCallbackData != nil && pCallbackData.pMessage != nil {
-					os.write_string(os.stderr, string(pCallbackData.pMessage))
-				}
-				os.write_string(os.stderr, "\n")
-			}
-			return false
-		}
-
-		debug_info := vk.DebugUtilsMessengerCreateInfoEXT {
-			sType = .DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-			messageSeverity = {.WARNING, .ERROR},
-			messageType = {.VALIDATION, .PERFORMANCE},
-			pfnUserCallback = debug_callback,
-		}
-
-		create_info.pNext = &debug_info
+	extensions := vk_platform_instance_extensions()
+	instance_info := vk.InstanceCreateInfo{
+		sType                   = .INSTANCE_CREATE_INFO,
+		pApplicationInfo        = &app_info,
+		enabledExtensionCount   = u32(len(extensions)),
+		ppEnabledExtensionNames = raw_data(extensions),
 	}
 
 	instance: vk.Instance
-	vk.CreateInstance(&create_info, nil, &instance)
+	vk.CreateInstance(&instance_info, nil, &instance)
 	vk.load_proc_addresses(instance)
 
-	when ODIN_DEBUG {
-		debug_messenger: vk.DebugUtilsMessengerEXT
-		vk.CreateDebugUtilsMessengerEXT(instance, &debug_info, nil, &debug_messenger)
-	}
-
  	// Create Surface
-	surface_create_info := vk.Win32SurfaceCreateInfoKHR {
-		sType = .WIN32_SURFACE_CREATE_INFO_KHR,
-		hinstance = window.hInstance,
-		hwnd = window.hwnd,
-	}
-	vk.CreateWin32SurfaceKHR(instance, &surface_create_info, nil, &vks.surface)
+	swapchain.surface = vk_create_platform_surface(instance) or_else panic("Failed to create surface")
 
  	// Pick Physical Device
 	device_count: u32
@@ -158,7 +100,9 @@ vk_init :: proc() {
 
 	queue_family_index: u32
 	for queue_family, i in queue_families {
-		if .GRAPHICS in queue_family.queueFlags {
+		present_support: b32
+		vk.GetPhysicalDeviceSurfaceSupportKHR(vks.gpu, u32(i), swapchain.surface, &present_support)
+		if .GRAPHICS in queue_family.queueFlags && present_support {
 			queue_family_index = u32(i)
 			break
 		}
@@ -181,18 +125,19 @@ vk_init :: proc() {
 	features_12 := vk.PhysicalDeviceVulkan12Features {
 		sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
 		pNext = &features_13,
-		descriptorIndexing = true,
-		descriptorBindingPartiallyBound = true,
-		descriptorBindingSampledImageUpdateAfterBind = true,
-		runtimeDescriptorArray = true,
-		shaderSampledImageArrayNonUniformIndexing = true,
 		bufferDeviceAddress = true,
 		scalarBlockLayout = true,
 	}
 
+	features_11 := vk.PhysicalDeviceVulkan11Features {
+		sType = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+		pNext = &features_12,
+		shaderDrawParameters = true,
+	}
+
 	features_10 := vk.PhysicalDeviceFeatures2 {
 		sType = .PHYSICAL_DEVICE_FEATURES_2,
-		pNext = &features_12,
+		pNext = &features_11,
 		features = {
 			shaderInt64 = true,
 		},
@@ -224,7 +169,6 @@ vk_init :: proc() {
 	command_pool: vk.CommandPool
 	vk.CreateCommandPool(vks.device, &pool_info, nil, &command_pool)
 
-
  	// Sync objects
 	semaphore_info := vk.SemaphoreCreateInfo { sType = .SEMAPHORE_CREATE_INFO }
 	fence_info := vk.FenceCreateInfo { sType = .FENCE_CREATE_INFO, flags = {.SIGNALED} }
@@ -245,55 +189,42 @@ vk_init :: proc() {
 	vks.stripe_buffer   = create_buffer(16 * mem.Megabyte)
 
  	// Create Pipeline
-	vert_spv := #load("../assets/shaders/shader.vert.spv", []u32)
-	frag_spv := #load("../assets/shaders/shader.frag.spv", []u32)
+	shader_spv := #load("../assets/shaders/shader.spv", []u32)
 
 	push_constant_range := vk.PushConstantRange {
 		stageFlags = {.VERTEX, .FRAGMENT},
-		offset     = 0,
 		size       = size_of(Push_Constants),
 	}
 
 	pipeline_layout_info := vk.PipelineLayoutCreateInfo {
 		sType                  = .PIPELINE_LAYOUT_CREATE_INFO,
-		setLayoutCount         = 0,
-		pSetLayouts            = nil,
 		pushConstantRangeCount = 1,
 		pPushConstantRanges    = &push_constant_range,
 	}
 
 	vk.CreatePipelineLayout(vks.device, &pipeline_layout_info, nil, &vks.pipeline_layout)
 
-	vert_module_info := vk.ShaderModuleCreateInfo {
+	shader_module_info := vk.ShaderModuleCreateInfo {
 		sType = .SHADER_MODULE_CREATE_INFO,
-		codeSize = len(vert_spv) * 4,
-		pCode = raw_data(vert_spv),
+		codeSize = len(shader_spv) * 4,
+		pCode = raw_data(shader_spv),
 	}
-	vert_module: vk.ShaderModule
-	vk.CreateShaderModule(vks.device, &vert_module_info, nil, &vert_module)
-	defer vk.DestroyShaderModule(vks.device, vert_module, nil)
-
-	frag_module_info := vk.ShaderModuleCreateInfo {
-		sType = .SHADER_MODULE_CREATE_INFO,
-		codeSize = len(frag_spv) * 4,
-		pCode = raw_data(frag_spv),
-	}
-	frag_module: vk.ShaderModule
-	vk.CreateShaderModule(vks.device, &frag_module_info, nil, &frag_module)
-	defer vk.DestroyShaderModule(vks.device, frag_module, nil)
+	shader_module: vk.ShaderModule
+	vk.CreateShaderModule(vks.device, &shader_module_info, nil, &shader_module)
+	defer vk.DestroyShaderModule(vks.device, shader_module, nil)
 
 	stages := [?]vk.PipelineShaderStageCreateInfo {
 		{
 			sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
 			stage = {.VERTEX},
-			module = vert_module,
-			pName = "main",
+			module = shader_module,
+			pName = "vs_main",
 		},
 		{
 			sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
 			stage = {.FRAGMENT},
-			module = frag_module,
-			pName = "main",
+			module = shader_module,
+			pName = "fs_main",
 		},
 	}
 
@@ -315,7 +246,6 @@ vk_init :: proc() {
 	rasterization := vk.PipelineRasterizationStateCreateInfo {
 		sType = .PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
 		polygonMode = .FILL,
-		cullMode = {},
 		frontFace = .CLOCKWISE,
 		lineWidth = 1.0,
 	}
@@ -373,10 +303,10 @@ vk_init :: proc() {
 
 	vk.CreateGraphicsPipelines(vks.device, 0, 1, &pipeline_info, nil, &vks.pipeline)
 
-	vk_recreate_swapchain()
+	vk_swapchain_create()
 }
 
-vk_recreate_swapchain :: proc() {
+vk_swapchain_create :: proc() {
 	vk.DeviceWaitIdle(vks.device)
 
 	if swapchain.swapchain != 0 {
@@ -392,13 +322,17 @@ vk_recreate_swapchain :: proc() {
 	}
 
 	capabilities: vk.SurfaceCapabilitiesKHR
-	vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(vks.gpu, vks.surface, &capabilities)
-	extent := vk.Extent2D{u32(window.size.x), u32(window.size.y)}
+	vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(vks.gpu, swapchain.surface, &capabilities)
+
+	extent: vk.Extent2D
+	extent.width = clamp(u32(window.size.x), capabilities.minImageExtent.width, capabilities.maxImageExtent.width)
+	extent.height = clamp(u32(window.size.y), capabilities.minImageExtent.height, capabilities.maxImageExtent.height)
+	desired_image_count := min(capabilities.minImageCount + 1, capabilities.maxImageCount)
 
 	create_info := vk.SwapchainCreateInfoKHR {
 		sType = .SWAPCHAIN_CREATE_INFO_KHR,
-		surface = vks.surface,
-		minImageCount = capabilities.minImageCount,
+		surface = swapchain.surface,
+		minImageCount = desired_image_count,
 		imageFormat = .B8G8R8A8_UNORM,
 		imageColorSpace = .SRGB_NONLINEAR,
 		imageExtent = extent,
@@ -455,7 +389,7 @@ vk_render :: proc() {
 	)
 
 	if res == .ERROR_OUT_OF_DATE_KHR {
-		vk_recreate_swapchain()
+		vk_swapchain_create()
 		return
 	}
 
@@ -499,7 +433,6 @@ vk_render :: proc() {
 	vk.CmdBindPipeline(cmd, .GRAPHICS, vks.pipeline)
 
 	viewport := vk.Viewport {
-		x = 0, y = 0,
 		width = f32(window.size.x),
 		height = f32(window.size.y),
 		minDepth = 0.0, maxDepth = 1.0,
@@ -507,7 +440,6 @@ vk_render :: proc() {
 	vk.CmdSetViewport(cmd, 0, 1, &viewport)
 
 	scissor := vk.Rect2D {
-		offset = {0, 0},
 		extent = {u32(window.size.x), u32(window.size.y)},
 	}
 	vk.CmdSetScissor(cmd, 0, 1, &scissor)
@@ -520,10 +452,9 @@ vk_render :: proc() {
 	}
 	vk.CmdPushConstants(cmd, vks.pipeline_layout, {.VERTEX, .FRAGMENT}, 0, size_of(pc), &pc)
 
-	if len(instances) > 0 {
-		mem.copy(vks.instance_buffer.mapped, raw_data(instances[:]), len(instances) * size_of(Instance))
-		vk.CmdDraw(cmd, 4, u32(len(instances)), 0, 0)
-	}
+	mem.copy(vks.instance_buffer.mapped, raw_data(instances[:]), len(instances) * size_of(Instance))
+	vk.CmdDraw(cmd, 4, u32(len(instances)), 0, 0)
+	clear(&instances)
 
 	vk.CmdEndRendering(cmd)
 
@@ -572,7 +503,7 @@ vk_render :: proc() {
 
 	present_res := vk.QueuePresentKHR(vks.queue, &present_info)
 	if present_res == .ERROR_OUT_OF_DATE_KHR || present_res == .SUBOPTIMAL_KHR || res == .SUBOPTIMAL_KHR {
-		vk_recreate_swapchain()
+		vk_swapchain_create()
 	}
 }
 

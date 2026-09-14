@@ -1,28 +1,28 @@
 package main
 
 import "core:math"
-import "fx"
+import "gfx"
 
 scroll_target: f32
 scroll_current: f32
 
-main :: proc() {
-	fx.init("Scanline Sweeper")
-	fx.run(frame)
-}
-
 frame :: proc() {
-	dt := fx.frame_time()
-	fx.clear_window({13, 16, 23, 255})
+	dt := gfx.frame_time()
 
-	scroll_target += fx.mouse_scroll().y * 60.0
+	scroll_target += gfx.mouse_scroll().y * 60.0
 	scroll_current = math.lerp(scroll_current, scroll_target, 1.0 - math.pow(0.0001, dt))
 	y := scroll_current + 35.0
 
 	for text in sample_texts {
-		fx.draw_text(text, {30.0, y}, 24.0, {240, 244, 255, 255})
+		gfx.draw_text(text, {30.0, y}, 24.0, {240, 244, 255, 255})
 		y += 30.0
 	}
+}
+
+main :: proc() {
+	gfx.init("Scanline Sweeper")
+	gfx.set_clear_color({13, 16, 23, 255})
+	gfx.run(frame)
 }
 
 @(rodata)
